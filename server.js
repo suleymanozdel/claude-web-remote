@@ -290,7 +290,8 @@ wss.on("connection", (ws, req) => {
       if (/subagent/i.test(l)) return false;
       if (/stopit/i.test(l)) return false;
       if (/--agent\s/i.test(l)) return false;
-      if (/Tip:\s+Use/i.test(l)) return false;
+      if (/^Tip:/i.test(l)) return false;
+      if (/install-github-app/i.test(l)) return false;
 
       // User echo — filter out the user's own prompt text
       if (/^(hey|hi|hello|yes|no|ok|okay|y|n)$/i.test(l)) return false;
