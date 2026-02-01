@@ -1,9 +1,9 @@
-require("dotenv").config();
 // Claude Code Web Remote - Server
 // ================================
 // Express + WebSocket server that spawns Claude Code in a real PTY.
 // Each connected client gets their own Claude session.
 
+require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const path = require("path");
@@ -216,12 +216,154 @@ wss.on("connection", (ws, req) => {
     }
   }
 
+  // --- Server-side TTS answer extraction ---
+  let rawBuffer = "";
+  let userSentAt = 0;
+  let ttsTimer = null;
+  let ttsDone = false;
+  let lastUserText = "";
+
+  function stripAnsiServer(str) {
+    return str
+      .replace(/\x1b\][^\x07]*\x07/g, "")
+      // Replace cursor movement sequences with a space to prevent word merging
+      .replace(/\x1b\[[0-9;?]*[ABCDHJ]/g, " ")
+      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
+      .replace(/\x1b[()][A-Z0-9]/g, "")
+      .replace(/\x1b[\x20-\x2F]*[\x40-\x7E]/g, "")
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
+      .replace(/\r\n?/g, "\n");
+  }
+
+  function extractAnswer(raw) {
+    const clean = stripAnsiServer(raw)
+      .replace(/[╭╮╯╰│┌┐└┘├┤┬┴┼▐▛▜▌▝▘█▀▄░▒▓⎿⎡⎢⎣]/g, "")
+      .replace(/[─━]{2,}/g, "")
+      .replace(/[✻✶✽✢●·⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\*]/g, "")
+      .replace(/\xa0/g, " ");
+
+    // Claude's answer appears after the "⎿" marker in the raw output.
+    // The PTY output pattern is: user prompt echo → spinner → answer block
+    // We look for the answer content between response markers.
+
+    const lines = clean.split("\n").map(l => l.trim()).filter(l => l);
+
+    // Filter out all known UI/chrome lines
+    const answerLines = lines.filter(l => {
+      const alpha = l.replace(/[^a-zA-Z]/g, "");
+      if (alpha.length < 3) return false;
+      // Filter spinner animation fragments (short lines like "N ws", "e p", etc.)
+      if (l.length < 8) return false;
+
+      // Spinner / thinking words — Claude uses random verbs with "…"
+      // Match any single word (possibly with accented chars) followed by ellipsis
+      if (/^[A-Za-z\u00C0-\u024F]+…\.{0,3}$/.test(l)) return false;
+      // Without the ellipsis Unicode char, just dots
+      if (/^[A-Za-z\u00C0-\u024F]+\.{2,3}$/.test(l)) return false;
+      // Partial spinner (truncated single word)
+      if (/^[A-Z\u00C0-\u024F][a-z\u00C0-\u024F]+$/.test(l) && l.length < 15) return false;
+
+      // Welcome screen
+      if (/welcome\s*back/i.test(l)) return false;
+      if (/Claude\s*Code\s*v/i.test(l)) return false;
+      if (/opus\s+\d|claude\s+max|organization/i.test(l)) return false;
+      if (/@.*\.(com|org|net|io)/i.test(l)) return false;
+      if (/\/opt\/|workspaces\//i.test(l)) return false;
+      if (/Tips\s+for\s+getting/i.test(l)) return false;
+      if (/Ask\s+Claude\s+to/i.test(l)) return false;
+      if (/Recent\s+activity/i.test(l)) return false;
+      if (/No\s+recent\s+activity/i.test(l)) return false;
+      if (/I\s+want\s+to\s+build/i.test(l)) return false;
+      if (/beneath\s+the\s+input/i.test(l)) return false;
+      if (/Try\s+"(edit|fix|create|build|test|refactor)/i.test(l)) return false;
+
+      // Prompt / input lines
+      if (/^[>❯]/.test(l)) return false;
+      if (/^\?/.test(l)) return false;
+      if (/for\s+shortcuts/i.test(l)) return false;
+      if (/esc\s+(to\s+)?interrupt/i.test(l)) return false;
+      if (/press\s+/i.test(l) && l.length < 40) return false;
+
+      // Slash commands and UI
+      if (/^\//i.test(l)) return false;
+      if (/\/exit|\/help|\/clear|\/compact|\/stop|\/cost|\/review/i.test(l)) return false;
+      if (/subagent/i.test(l)) return false;
+      if (/stopit/i.test(l)) return false;
+      if (/--agent\s/i.test(l)) return false;
+      if (/Tip:\s+Use/i.test(l)) return false;
+
+      // User echo — filter out the user's own prompt text
+      if (/^(hey|hi|hello|yes|no|ok|okay|y|n)$/i.test(l)) return false;
+      if (lastUserText && lastUserText.length > 2) {
+        const lower = l.toLowerCase().trim();
+        // Exact match or the line contains the user's prompt
+        if (lower === lastUserText) return false;
+        // Line starts with prompt marker + user text (e.g. "❯ user text")
+        if (lower.replace(/^[❯>\s]+/, "") === lastUserText) return false;
+        // User text appears as a substring (PTY echo)
+        if (lower.includes(lastUserText) && l.length < lastUserText.length + 15) return false;
+      }
+
+      // Cost/token info
+      if (/\d+\s*tokens?/i.test(l) && l.length < 40) return false;
+      if (/^\$[\d.]+/i.test(l)) return false;
+
+      // Newspapering-style partial animation (single word + ellipsis anywhere)
+      if (/^[A-Za-z\u00C0-\u024F]+…/.test(l) && l.length < 25) return false;
+
+      return true;
+    });
+
+    return answerLines.join(" ").replace(/\s{2,}/g, " ").trim();
+  }
+
+  function onOutputChunk(raw) {
+    if (!userSentAt || ttsDone) return;
+    if (Date.now() - userSentAt > 60000) return;
+
+    rawBuffer += raw;
+    clearTimeout(ttsTimer);
+
+    // Only start the debounce timer once we detect real answer content
+    const preview = extractAnswer(rawBuffer);
+    if (preview.length <= 5) return; // Still just spinner/UI, wait for more
+
+    // We have answer content — wait 2s for more to arrive, then send
+    ttsTimer = setTimeout(async () => {
+      const finalAnswer = extractAnswer(rawBuffer);
+      console.log(`[TTS] Extracted: "${finalAnswer.substring(0, 200)}"`);
+      if (finalAnswer.length > 5) {
+        ttsDone = true;
+        try {
+          const cmd = new SynthesizeSpeechCommand({
+            Text: finalAnswer.substring(0, 3000),
+            OutputFormat: "mp3",
+            VoiceId: "Danielle",
+            Engine: "generative",
+          });
+          const result = await polly.send(cmd);
+          const chunks = [];
+          for await (const chunk of result.AudioStream) {
+            chunks.push(chunk);
+          }
+          const audioBuffer = Buffer.concat(chunks);
+          const base64Audio = audioBuffer.toString("base64");
+          send({ type: "tts_audio", audio: base64Audio });
+        } catch (err) {
+          console.error("Polly TTS error:", err.message);
+        }
+      }
+    }, 2000);
+  }
+
   function startSession(cols, rows) {
     if (child) return;
     child = spawnClaude(cols, rows, clientName);
 
     child.stdout.on("data", (data) => {
-      send({ type: "output", data: data.toString() });
+      const str = data.toString();
+      send({ type: "output", data: str });
+      onOutputChunk(str);
     });
 
     child.stderr.on("data", (data) => {
@@ -257,6 +399,12 @@ wss.on("connection", (ws, req) => {
       const parsed = JSON.parse(msg);
       if (parsed.type === "input") {
         if (!child) return;
+        // Reset TTS tracking on user input
+        rawBuffer = "";
+        userSentAt = Date.now();
+        ttsDone = false;
+        lastUserText = parsed.data.replace(/\r$/, "").trim().toLowerCase();
+        clearTimeout(ttsTimer);
         if (parsed.data.length > 1 && parsed.data.endsWith("\r")) {
           const text = parsed.data.slice(0, -1);
           child.stdin.write(text);
