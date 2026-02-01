@@ -242,86 +242,73 @@ wss.on("connection", (ws, req) => {
       .replace(/[✻✶✽✢●·⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\*]/g, "")
       .replace(/\xa0/g, " ");
 
-    // Claude's answer appears after the "⎿" marker in the raw output.
-    // The PTY output pattern is: user prompt echo → spinner → answer block
-    // We look for the answer content between response markers.
-
     const lines = clean.split("\n").map(l => l.trim()).filter(l => l);
 
     // Filter out all known UI/chrome lines
     const answerLines = lines.filter(l => {
       const alpha = l.replace(/[^a-zA-Z]/g, "");
       if (alpha.length < 3) return false;
-      // Filter spinner animation fragments (short lines like "N ws", "e p", etc.)
       if (l.length < 8) return false;
 
-      // Spinner / thinking words — Claude uses random verbs with "…"
-      // Match any single word (possibly with accented chars) followed by ellipsis
-      if (/^[A-Za-z\u00C0-\u024F]+…\.{0,3}$/.test(l)) return false;
-      // Without the ellipsis Unicode char, just dots
+      // --- Spinner / animation ---
+      // Single word + ellipsis (any language, accented)
+      if (/^[A-Za-z\u00C0-\u024F]+…/.test(l) && l.length < 25) return false;
       if (/^[A-Za-z\u00C0-\u024F]+\.{2,3}$/.test(l)) return false;
-      // Partial spinner (truncated single word)
+      // Single capitalized word alone (truncated spinner)
       if (/^[A-Z\u00C0-\u024F][a-z\u00C0-\u024F]+$/.test(l) && l.length < 15) return false;
-      // Spinner animation fragments: same word repeated (e.g. "thinking thinking thinking")
-      if (/^(\w+)(\s+\1){1,}/.test(l)) return false;
-      // Line is just "(word)" like "(thinking)"
+      // Same word repeated ("thinking thinking thinking")
+      if (/^(\w+)(\s+\1){1,}/i.test(l)) return false;
+      // "(word)" pattern
       if (/^\([a-z]+\)$/i.test(l)) return false;
-      // Contains "thinking" or other spinner words as standalone
-      if (/\bthinking\b/i.test(l) && l.replace(/thinking/gi, "").replace(/[^a-zA-Z]/g, "").length < 10) return false;
+      // Two-three word spinner phrases ("point in time", etc.)
+      if (/^[a-z]+ [a-z]+( [a-z]+)?$/i.test(l) && l.length < 20) return false;
 
-      // Welcome screen
+      // --- Welcome screen & UI chrome ---
       if (/welcome\s*back/i.test(l)) return false;
-      if (/Claude\s*Code\s*v/i.test(l)) return false;
-      if (/opus\s+\d|claude\s+max|organization/i.test(l)) return false;
+      if (/Claude\s*Code/i.test(l)) return false;
+      if (/opus|claude\s+max|organization/i.test(l)) return false;
       if (/@.*\.(com|org|net|io)/i.test(l)) return false;
       if (/\/opt\/|workspaces\//i.test(l)) return false;
-      if (/Tips\s+for\s+getting/i.test(l)) return false;
-      if (/Ask\s+Claude\s+to/i.test(l)) return false;
+      if (/Tips\s+for/i.test(l)) return false;
+      if (/Ask\s+Claude/i.test(l)) return false;
       if (/Recent\s+activity/i.test(l)) return false;
       if (/No\s+recent\s+activity/i.test(l)) return false;
       if (/I\s+want\s+to\s+build/i.test(l)) return false;
       if (/beneath\s+the\s+input/i.test(l)) return false;
-      if (/Try\s+"(edit|fix|create|build|test|refactor)/i.test(l)) return false;
+      if (/Try\s+"/i.test(l)) return false;
 
-      // Prompt / input lines
+      // --- Prompt / input UI ---
       if (/^[>❯]/.test(l)) return false;
       if (/^\?/.test(l)) return false;
       if (/for\s+shortcuts/i.test(l)) return false;
       if (/esc\s+(to\s+)?interrupt/i.test(l)) return false;
       if (/press\s+/i.test(l) && l.length < 40) return false;
 
-      // Slash commands and UI
+      // --- Slash commands and UI labels ---
       if (/^\//i.test(l)) return false;
-      if (/\/exit|\/help|\/clear|\/compact|\/stop|\/cost|\/review/i.test(l)) return false;
+      if (/\/(exit|help|clear|compact|stop|cost|review|install)/i.test(l)) return false;
       if (/subagent/i.test(l)) return false;
       if (/stopit/i.test(l)) return false;
       if (/--agent\s/i.test(l)) return false;
       if (/^Tip:/i.test(l)) return false;
-      if (/install-github-app/i.test(l)) return false;
 
-      // User echo — filter out the user's own prompt text
-      if (/^(hey|hi|hello|yes|no|ok|okay|y|n)$/i.test(l)) return false;
-      if (lastUserText && lastUserText.length > 2) {
-        const lower = l.toLowerCase().trim();
-        // Exact match or the line contains the user's prompt
-        if (lower === lastUserText) return false;
-        // Line starts with prompt marker + user text (e.g. "❯ user text")
-        if (lower.replace(/^[❯>\s]+/, "") === lastUserText) return false;
-        // User text appears as a substring (PTY echo)
-        if (lower.includes(lastUserText) && l.length < lastUserText.length + 15) return false;
-      }
-
-      // Cost/token info
+      // --- Cost/token info ---
       if (/\d+\s*tokens?/i.test(l) && l.length < 40) return false;
       if (/^\$[\d.]+/i.test(l)) return false;
-
-      // Newspapering-style partial animation (single word + ellipsis anywhere)
-      if (/^[A-Za-z\u00C0-\u024F]+…/.test(l) && l.length < 25) return false;
 
       return true;
     });
 
-    return answerLines.join(" ").replace(/\s{2,}/g, " ").trim();
+    // Join into single text, then remove the user's prompt if it leaked through
+    let result = answerLines.join(" ").replace(/\s{2,}/g, " ").trim();
+
+    if (lastUserText && lastUserText.length > 2) {
+      // Remove all occurrences of the user's text (case-insensitive)
+      const escaped = lastUserText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      result = result.replace(new RegExp(escaped, "gi"), "").replace(/\s{2,}/g, " ").trim();
+    }
+
+    return result;
   }
 
   function onOutputChunk(raw) {
