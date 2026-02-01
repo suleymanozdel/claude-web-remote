@@ -222,6 +222,7 @@ wss.on("connection", (ws, req) => {
   let ttsTimer = null;
   let ttsDone = false;
   let lastUserText = "";
+  let isFirstMessage = true;
 
   function stripAnsiServer(str) {
     return str
@@ -261,11 +262,9 @@ wss.on("connection", (ws, req) => {
     // The answer block is continuous text that is NOT ui chrome/spinner/tool output.
     const candidateLines = lastPromptIdx > 0 ? lines.slice(0, lastPromptIdx) : lines;
 
-    // Now find the last contiguous block of "real text" lines
+    // Filter out junk, keep answer lines
     const isJunk = (l) => {
-      if (l.length < 8) return true;
-      const alpha = l.replace(/[^a-zA-Z]/g, "");
-      if (alpha.length < 3) return true;
+      if (!l || l.length < 3) return true;
       // Spinner
       if (/^[A-Za-z\u00C0-\u024F]+…/.test(l)) return true;
       if (/^[A-Za-z\u00C0-\u024F]+\.{2,3}$/.test(l)) return true;
@@ -307,25 +306,23 @@ wss.on("connection", (ws, req) => {
       return false;
     };
 
-    // Walk backwards to find the answer block
-    let endIdx = candidateLines.length - 1;
-    // Skip trailing junk
-    while (endIdx >= 0 && isJunk(candidateLines[endIdx])) endIdx--;
+    // Keep all non-junk lines
+    const answerLines = candidateLines.filter(l => !isJunk(l));
 
-    let startIdx = endIdx;
-    // Walk back to find start of contiguous answer text
-    while (startIdx > 0 && !isJunk(candidateLines[startIdx - 1])) startIdx--;
+    let result = answerLines.join(" ").replace(/\s{2,}/g, " ").trim();
 
-    if (endIdx < 0 || startIdx > endIdx) return "";
-
-    let result = candidateLines.slice(startIdx, endIdx + 1).join(" ").replace(/\s{2,}/g, " ").trim();
-
-    // Post-processing: strip any remaining spinner/thinking fragments
+    // Post-processing: strip any remaining spinner/thinking fragments from joined text
     result = result
       .replace(/\(thinking\)/gi, "")
       .replace(/\bthinking\b/gi, "")
+      // Remove word+ellipsis (spinner) anywhere
       .replace(/\b[A-Za-z\u00C0-\u024F]+…/g, "")
-      .replace(/^([a-z]{1,3}\s+)+/i, "")
+      // Remove standalone ellipsis
+      .replace(/…/g, "")
+      // Remove short fragments at start (1-4 chars before first real sentence)
+      .replace(/^(\s*[a-zA-Z]{1,4}\s+)+(?=[A-Z])/g, "")
+      // Remove leading punctuation/fragments
+      .replace(/^[\s!.,;:?-]+/, "")
       .replace(/\s{2,}/g, " ")
       .trim();
 
@@ -346,12 +343,13 @@ wss.on("connection", (ws, req) => {
     clearTimeout(ttsTimer);
 
     // Wait for the prompt marker "❯" which signals Claude is done responding.
-    // The answer text appears between the last spinner and this prompt marker.
-    const stripped = stripAnsiServer(rawBuffer);
-    const hasPrompt = /❯\s*$/.test(stripped.trim()) || /❯/.test(stripped.slice(-50));
+    // First message: buffer has welcome screen ❯ + user prompt ❯ + answer prompt ❯ (need ≥2)
+    // Subsequent messages: buffer starts after reset, only has answer prompt ❯ (need ≥1)
+    const promptCount = (rawBuffer.match(/❯/g) || []).length;
+    const needed = isFirstMessage ? 2 : 1;
 
-    if (!hasPrompt) {
-      // Claude is still working — no prompt yet, keep waiting
+    if (promptCount < needed) {
+      // Claude is still working — new prompt hasn't appeared yet
       return;
     }
 
@@ -361,6 +359,7 @@ wss.on("connection", (ws, req) => {
       console.log(`[TTS] Extracted: "${finalAnswer.substring(0, 200)}"`);
       if (finalAnswer.length > 5) {
         ttsDone = true;
+        isFirstMessage = false;
         try {
           const cmd = new SynthesizeSpeechCommand({
             Text: finalAnswer.substring(0, 3000),
