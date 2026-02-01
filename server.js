@@ -237,101 +237,59 @@ wss.on("connection", (ws, req) => {
   }
 
   function extractAnswer(raw) {
-    const clean = stripAnsiServer(raw)
+    // Claude Code's PTY output structure:
+    //   [user echo] [spinner animation] [● answer text with \x1b[1C as spaces] [❯ prompt]
+    // The answer always starts with ● (white bullet) followed by the actual text.
+    // Words are separated by \x1b[1C (cursor right 1) instead of spaces.
+
+    // Find the LAST ● marker in the raw output — that's the start of the answer
+    const lastBullet = raw.lastIndexOf("●");
+    if (lastBullet === -1) return "";
+
+    // Extract everything after ● up to the next prompt area
+    let answerRaw = raw.substring(lastBullet + 1);
+
+    // Replace cursor-right sequences (\x1b[1C, \x1b[2C etc.) with spaces
+    answerRaw = answerRaw.replace(/\x1b\[\d*C/g, " ");
+
+    // Strip all remaining ANSI sequences
+    answerRaw = answerRaw
+      .replace(/\x1b\][^\x07]*\x07/g, "")
+      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
+      .replace(/\x1b[()][A-Z0-9]/g, "")
+      .replace(/\x1b[\x20-\x2F]*[\x40-\x7E]/g, "")
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
+      .replace(/\r\n?/g, "\n");
+
+    // Remove box drawing, spinner chars, decorative elements
+    answerRaw = answerRaw
       .replace(/[╭╮╯╰│┌┐└┘├┤┬┴┼▐▛▜▌▝▘█▀▄░▒▓⎿⎡⎢⎣]/g, "")
       .replace(/[─━]{2,}/g, "")
       .replace(/[✻✶✽✢●·⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\*]/g, "")
+      .replace(/…/g, "")
       .replace(/\xa0/g, " ");
 
-    // Strategy: find the LAST block of conversational text before the final ❯ prompt.
-    // Claude's output pattern: [user echo] [spinner] [tool calls...] [answer text] [❯ prompt]
-    // The answer is the last substantial block of natural language.
-
-    const lines = clean.split("\n").map(l => l.trim()).filter(l => l);
-
-    // Find the last prompt marker index
-    let lastPromptIdx = -1;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (/^❯/.test(lines[i]) || /for\s+shortcuts/i.test(lines[i])) {
-        lastPromptIdx = i;
-        break;
-      }
+    // Take lines and filter UI/chrome that might appear after the answer
+    const lines = answerRaw.split("\n").map(l => l.trim()).filter(l => l);
+    const answerLines = [];
+    for (const l of lines) {
+      // Stop at prompt or UI chrome (answer is over)
+      if (/^❯/.test(l)) break;
+      if (/for\s+shortcuts/i.test(l)) break;
+      if (/esc\s+(to\s+)?interrupt/i.test(l)) break;
+      if (/^[─━]/.test(l)) break;
+      if (/^Tip:/i.test(l)) break;
+      if (/install-github-app/i.test(l)) break;
+      // Stop at spinner words (Claude is idle/thinking again)
+      if (/^[A-Za-z\u00C0-\u024F]+…$/.test(l)) break;
+      if (/^[A-Z\u00C0-\u024F][a-z\u00C0-\u024F]+$/.test(l) && l.length < 18) break;
+      // Skip obvious non-answer lines
+      if (/^\?/.test(l)) continue;
+      if (!l || l.length < 2) continue;
+      answerLines.push(l);
     }
-
-    // Work backwards from the prompt to find the answer block.
-    // The answer block is continuous text that is NOT ui chrome/spinner/tool output.
-    const candidateLines = lastPromptIdx > 0 ? lines.slice(0, lastPromptIdx) : lines;
-
-    // Filter out junk, keep answer lines
-    const isJunk = (l) => {
-      if (!l || l.length < 3) return true;
-      // Spinner
-      if (/^[A-Za-z\u00C0-\u024F]+…/.test(l)) return true;
-      if (/^[A-Za-z\u00C0-\u024F]+\.{2,3}$/.test(l)) return true;
-      if (/^[A-Z][a-z]+$/.test(l) && l.length < 15) return true;
-      if (/^(\w+)(\s+\1){1,}/i.test(l)) return true;
-      if (/^\([a-z]+\)$/i.test(l)) return true;
-      // UI/chrome
-      if (/^[>❯?]/.test(l)) return true;
-      if (/for\s+shortcuts/i.test(l)) return true;
-      if (/esc\s+(to\s+)?interrupt/i.test(l)) return true;
-      if (/welcome\s*back/i.test(l)) return true;
-      if (/Claude\s*Code/i.test(l)) return true;
-      if (/opus|claude\s+max|organization/i.test(l)) return true;
-      if (/@.*\.(com|org|net|io)/i.test(l)) return true;
-      if (/\/opt\/|workspaces\//i.test(l)) return true;
-      if (/^\//i.test(l)) return true;
-      if (/subagent/i.test(l)) return true;
-      if (/^Tip:/i.test(l)) return true;
-      if (/stopit/i.test(l)) return true;
-      if (/ctrl\+/i.test(l)) return true;
-      if (/Esc to cancel/i.test(l)) return true;
-      if (/Tab to amend/i.test(l)) return true;
-      if (/Do you want to proceed/i.test(l)) return true;
-      if (/tool use/i.test(l)) return true;
-      if (/thought for/i.test(l)) return true;
-      if (/Checking for updates/i.test(l)) return true;
-      if (/-maxdepth|-name|-type/i.test(l)) return true;  // shell commands
-      if (/Explore\(|Read\(|Glob\(|Grep\(|Write\(|Edit\(|Bash\(/i.test(l)) return true;  // tool names
-      if (/\d+\s*tokens?/i.test(l) && l.length < 40) return true;
-      if (/^\$[\d.]+/i.test(l)) return true;
-      if (/Yes,\s+allow/i.test(l)) return true;
-      if (/Tips\s+for|Ask\s+Claude|Recent\s+activity|No\s+recent|Try\s+"/i.test(l)) return true;
-      if (/beneath\s+the\s+input|I\s+want\s+to\s+build/i.test(l)) return true;
-      if (/--agent\s/i.test(l)) return true;
-      if (/\/(exit|help|clear|compact|stop|cost|review|install)/i.test(l)) return true;
-      if (/press\s+/i.test(l) && l.length < 40) return true;
-      // Short phrase likely spinner
-      if (/^[a-z]+ [a-z]+( [a-z]+)?$/i.test(l) && l.length < 20) return true;
-      return false;
-    };
-
-    // Keep all non-junk lines
-    const answerLines = candidateLines.filter(l => !isJunk(l));
 
     let result = answerLines.join(" ").replace(/\s{2,}/g, " ").trim();
-
-    // Post-processing: strip spinner/thinking/echo fragments from joined text
-    result = result
-      .replace(/\(thinking\)/gi, "")
-      .replace(/\bthinking\b/gi, "")
-      .replace(/\b[A-Za-z\u00C0-\u024F]+…/g, "")
-      .replace(/…/g, "")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-
-    // Strip leading junk: remove all short (1-4 char) word fragments at the start
-    // until we hit a word of 5+ chars (likely the start of real text)
-    result = result.replace(/^(\s*\b[a-zA-Z]{1,4}\b[\s.,;:!?-]*)+/, "").trim();
-    // Also strip if it starts with punctuation
-    result = result.replace(/^[\s!.,;:?-]+/, "").trim();
-
-    // Remove the user's prompt text if it leaked through
-    if (lastUserText && lastUserText.length > 2) {
-      const escaped = lastUserText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      result = result.replace(new RegExp(escaped, "gi"), "").replace(/\s{2,}/g, " ").trim();
-    }
-
     return result;
   }
 
@@ -369,12 +327,15 @@ wss.on("connection", (ws, req) => {
     if (ttsDone) return;
     clearTimeout(ttsTimer);
 
-    // Wait for prompt marker ❯ (Claude is done responding)
-    const promptCount = (rawBuffer.match(/❯/g) || []).length;
-    const needed = isFirstMessage ? 2 : 1;
-    if (promptCount < needed) return;
+    // Wait for ● (answer start marker) in the raw buffer
+    const lastBullet = rawBuffer.lastIndexOf("●");
+    if (lastBullet === -1) return;
 
-    // Prompt appeared — wait 2s for trailing output, then extract and speak
+    // Wait for ❯ AFTER the ● (means Claude finished the answer and is showing the prompt)
+    const afterBullet = rawBuffer.substring(lastBullet);
+    if (!afterBullet.includes("❯")) return;
+
+    // Answer is complete — wait 1s for trailing output, then extract and speak
     ttsTimer = setTimeout(async () => {
       const finalAnswer = extractAnswer(rawBuffer);
       console.log(`[TTS] Extracted: "${finalAnswer.substring(0, 200)}"`);
