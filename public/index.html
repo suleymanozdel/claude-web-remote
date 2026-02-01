@@ -656,56 +656,42 @@
     a.play().catch(() => {});
   }, { once: true });
 
-  function ttsDebug(msg) {
-    fixStatus.textContent = msg;
-    fixStatus.classList.add("visible");
-    setTimeout(() => fixStatus.classList.remove("visible"), 4000);
+  // TTS: server extracts answer, calls Polly, sends base64 audio via WebSocket
+  function playTTSAudio(base64Audio) {
+    if (!readAloud || ttsPlayed) return;
+    ttsPlayed = true;
+    stopTTS();
+    const binary = atob(base64Audio);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: "audio/mpeg" });
+    const url = URL.createObjectURL(blob);
+    ttsAudio = new Audio(url);
+    ttsAudio.play().catch(() => {});
+    ttsAudio.onended = () => { URL.revokeObjectURL(url); ttsAudio = null; };
   }
 
-  let ttsRetries = 0;
-  let outputSinceSend = 0;
-  let lastAnswerLen = 0;
+  // --- Browser Notifications for input prompts ---
+  function requestNotificationPermission() {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }
 
-  function maybeReadAloud() {
-    if (!readAloud || ttsPlayed) return;
-    if (Date.now() - lastUserSendTime > 30000) return;
-    outputSinceSend++;
-
-    clearTimeout(speechTimer);
-    const myId = ttsSendId;
-    speechTimer = setTimeout(async () => {
-      if (myId !== ttsSendId || ttsPlayed) return;
-
-      const newLines = getTerminalText(bufferLineBeforeSend);
-      const answer = extractClaudeAnswer(newLines);
-
-      // Wait until answer stabilizes (same length twice) and has real content
-      if (answer.length > 10 && answer.length === lastAnswerLen) {
-        ttsPlayed = true;
-        stopTTS();
-        try {
-          const resp = await fetch("./api/tts", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: answer }),
-          });
-          if (!resp.ok || myId !== ttsSendId) return;
-          const blob = await resp.blob();
-          if (myId !== ttsSendId) return;
-          const url = URL.createObjectURL(blob);
-          ttsAudio = new Audio(url);
-          ttsAudio.play().catch(() => {});
-          ttsAudio.onended = () => { URL.revokeObjectURL(url); ttsAudio = null; };
-        } catch {}
-      } else {
-        lastAnswerLen = answer.length;
-        if (ttsRetries < 15) {
-          ttsRetries++;
-          // Keep waiting for output to settle
-          speechTimer = setTimeout(() => maybeReadAloud(), 1500);
-        }
-      }
-    }, 1500);
+  function showInputNotification(message) {
+    // Browser notification (works when tab is in background / phone screen off)
+    if ("Notification" in window && Notification.permission === "granted") {
+      const notif = new Notification("Claude needs input", {
+        body: message,
+        icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>",
+        tag: "claude-input",
+        renotify: true,
+        vibrate: [200, 100, 200],
+      });
+      notif.onclick = () => { window.focus(); notif.close(); };
+    }
+    // Also vibrate if supported
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
   }
 
   // --- Mic / Whisper transcription ---
@@ -930,7 +916,10 @@
         const msg = JSON.parse(e.data);
         if (msg.type === "output") {
           term.write(cleanOutput(msg.data));
-          maybeReadAloud();
+        } else if (msg.type === "tts_audio") {
+          playTTSAudio(msg.audio);
+        } else if (msg.type === "input_needed") {
+          showInputNotification(msg.message);
         } else if (msg.type === "exit") {
           term.writeln("\r\n\x1b[33m[Session ended]\x1b[0m");
         } else if (msg.type === "error") {
@@ -970,14 +959,8 @@
     const btn = e.target.closest("[data-send], [data-arrow], [data-raw]");
     if (!btn) return;
     e.stopPropagation();
-    lastUserSendTime = Date.now();
-    ttsSendId++;
     ttsPlayed = false;
-    ttsRetries = 0;
-    outputSinceSend = 0;
-    lastAnswerLen = 0;
     stopTTS();
-    bufferLineBeforeSend = term.buffer.active.baseY + term.buffer.active.cursorY;
     const arrow = btn.getAttribute("data-arrow");
     if (arrow) { sendRaw(specialKeys[arrow]); return; }
     const raw = btn.getAttribute("data-raw");
@@ -1003,12 +986,8 @@
     if (sending) return;
     const text = chatInput.value;
 
-    lastUserSendTime = Date.now();
-    ttsSendId++;
+    requestNotificationPermission();
     ttsPlayed = false;
-    ttsRetries = 0;
-    outputSinceSend = 0;
-    lastAnswerLen = 0;
     stopTTS();
 
     // Empty input = just send Enter (acts as Enter key)

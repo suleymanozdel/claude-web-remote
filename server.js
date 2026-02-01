@@ -337,57 +337,70 @@ wss.on("connection", (ws, req) => {
 
   function needsUserInput(raw) {
     const stripped = stripAnsiServer(raw);
-    // Permission / approval prompts
     if (/Do you want to proceed/i.test(stripped)) return "Claude is asking: Do you want to proceed?";
-    if (/Yes,\s+allow/i.test(stripped)) return "Claude needs your permission to continue.";
+    if (/Yes,\s+allow/i.test(stripped)) return "Claude needs your permission.";
     if (/Allow\s+(once|always)/i.test(stripped)) return "Claude is asking for permission.";
     if (/Esc to cancel/i.test(stripped) && /Tab to amend/i.test(stripped)) return "Claude needs your approval.";
-    // Bash/tool approval
     if (/Run command\?/i.test(stripped)) return "Claude wants to run a command.";
     if (/Allow\s+.*\?/i.test(stripped)) return "Claude is asking for permission.";
-    // Yes/No prompt
     if (/\(y\/n\)/i.test(stripped) || /\[Y\/n\]/i.test(stripped)) return "Claude needs a yes or no answer.";
     return null;
   }
 
+  let inputNotifSent = false;
+
   function onOutputChunk(raw) {
-    if (!userSentAt || ttsDone) return;
+    if (!userSentAt) return;
     if (Date.now() - userSentAt > 120000) return;
 
     rawBuffer += raw;
+
+    // --- Notification: check if Claude needs user input ---
+    if (!inputNotifSent) {
+      const inputNeeded = needsUserInput(rawBuffer);
+      if (inputNeeded) {
+        inputNotifSent = true;
+        console.log(`[NOTIFY] Input needed: "${inputNeeded}"`);
+        send({ type: "input_needed", message: inputNeeded });
+      }
+    }
+
+    // --- TTS: read Claude's answer aloud ---
+    if (ttsDone) return;
     clearTimeout(ttsTimer);
 
-    // Check if Claude is waiting for user input
-    const inputNeeded = needsUserInput(rawBuffer);
-    if (!inputNeeded) return;
+    // Wait for prompt marker ❯ (Claude is done responding)
+    const promptCount = (rawBuffer.match(/❯/g) || []).length;
+    const needed = isFirstMessage ? 2 : 1;
+    if (promptCount < needed) return;
 
-    // Debounce 1.5s to let the full prompt render
+    // Prompt appeared — wait 2s for trailing output, then extract and speak
     ttsTimer = setTimeout(async () => {
-      const finalCheck = needsUserInput(rawBuffer);
-      if (!finalCheck) return;
-
-      console.log(`[TTS] Input needed: "${finalCheck}"`);
-      ttsDone = true;
-      isFirstMessage = false;
-      try {
-        const cmd = new SynthesizeSpeechCommand({
-          Text: finalCheck,
-          OutputFormat: "mp3",
-          VoiceId: "Danielle",
-          Engine: "generative",
-        });
-        const result = await polly.send(cmd);
-        const chunks = [];
-        for await (const chunk of result.AudioStream) {
-          chunks.push(chunk);
+      const finalAnswer = extractAnswer(rawBuffer);
+      console.log(`[TTS] Extracted: "${finalAnswer.substring(0, 200)}"`);
+      if (finalAnswer.length > 5) {
+        ttsDone = true;
+        isFirstMessage = false;
+        try {
+          const cmd = new SynthesizeSpeechCommand({
+            Text: finalAnswer.substring(0, 3000),
+            OutputFormat: "mp3",
+            VoiceId: "Danielle",
+            Engine: "generative",
+          });
+          const result = await polly.send(cmd);
+          const chunks = [];
+          for await (const chunk of result.AudioStream) {
+            chunks.push(chunk);
+          }
+          const audioBuffer = Buffer.concat(chunks);
+          const base64Audio = audioBuffer.toString("base64");
+          send({ type: "tts_audio", audio: base64Audio });
+        } catch (err) {
+          console.error("Polly TTS error:", err.message);
         }
-        const audioBuffer = Buffer.concat(chunks);
-        const base64Audio = audioBuffer.toString("base64");
-        send({ type: "tts_audio", audio: base64Audio });
-      } catch (err) {
-        console.error("Polly TTS error:", err.message);
       }
-    }, 1500);
+    }, 2000);
   }
 
   function startSession(cols, rows) {
@@ -437,6 +450,7 @@ wss.on("connection", (ws, req) => {
         rawBuffer = "";
         userSentAt = Date.now();
         ttsDone = false;
+        inputNotifSent = false;
         lastUserText = parsed.data.replace(/\r$/, "").trim().toLowerCase();
         clearTimeout(ttsTimer);
         if (parsed.data.length > 1 && parsed.data.endsWith("\r")) {

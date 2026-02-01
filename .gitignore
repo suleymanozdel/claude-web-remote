@@ -1,1 +1,3 @@
-node_modules/\nworkspaces/\n.env
+node_modules/
+workspaces/
+.env
