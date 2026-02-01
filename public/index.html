@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Claude Code Remote</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f6f6f9;
+    --surface: #ffffff;
+    --surface2: #f0f0f3;
+    --surface3: #e8e8ec;
+    --border: rgba(0,0,0,0.08);
+    --accent: #6d28d9;
+    --accent2: #8b5cf6;
+    --green: #059669;
+    --red: #dc2626;
+    --yellow: #d97706;
+    --text: #111827;
+    --text2: #6b7280;
+    --text3: #9ca3af;
+    --radius: 12px;
+    --radius-lg: 16px;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-lg: 0 4px 12px rgba(0,0,0,0.08);
+  }
+
+  html, body {
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+  }
+
+  /* --- Top bar --- */
+  #top-bar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface);
+    padding: 12px 16px;
+    padding-top: max(12px, env(safe-area-inset-top));
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    position: relative;
+    z-index: 10;
+  }
+  #top-bar .title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    letter-spacing: -0.3px;
+  }
+  #top-bar .title-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px; height: 26px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 7px;
+    font-size: 13px;
+    font-weight: 800;
+    color: #fff;
+  }
+
+  /* --- Terminal --- */
+  #terminal-container {
+    flex: 1;
+    overflow: hidden;
+    background: #ffffff;
+  }
+  #terminal-container .xterm { height: 100%; padding: 4px; }
+  #terminal-container .xterm-viewport {
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  /* --- Controls panel --- */
+  #controls {
+    flex-shrink: 0;
+    background: var(--surface);
+    padding: 10px 12px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -2px 8px rgba(0,0,0,0.04);
+  }
+
+  /* Connection status */
+  #status-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 10px;
+  }
+  #status {
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 14px;
+    border-radius: 20px;
+    background: var(--surface2);
+    color: var(--text2);
+    letter-spacing: 0.2px;
+  }
+  #status .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--yellow);
+    animation: pulse 2s infinite;
+  }
+  #status.connected { background: #ecfdf5; color: var(--green); }
+  #status.connected .dot { background: var(--green); animation: none; }
+  #status.disconnected { background: #fef2f2; color: var(--red); }
+  #status.disconnected .dot { background: var(--red); animation: none; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* Button grid */
+  #action-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .act-btn {
+    border: none;
+    border-radius: var(--radius);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 14px 0;
+    transition: transform 0.1s, opacity 0.1s;
+    -webkit-user-select: none;
+    user-select: none;
+    box-shadow: var(--shadow);
+  }
+  @media (hover: hover) {
+    .act-btn:hover { opacity: 0.85; filter: brightness(1.05); }
+  }
+  .act-btn:active { transform: scale(0.94); opacity: 0.85; }
+  .act-btn.green { background: var(--green); color: #fff; }
+  .act-btn.red { background: var(--red); color: #fff; }
+  .act-btn.purple { background: var(--accent); color: #fff; }
+  .act-btn.ghost {
+    background: var(--surface2);
+    color: var(--text2);
+    box-shadow: none;
+    border: 1px solid var(--border);
+  }
+
+  /* More actions tray */
+  #more-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    width: 100%;
+    padding: 5px;
+    margin-bottom: 8px;
+    border: none;
+    background: none;
+    color: var(--text3);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+  }
+  #more-toggle .chevron {
+    transition: transform 0.2s;
+    font-size: 9px;
+  }
+  #more-toggle.open .chevron { transform: rotate(180deg); }
+
+  #secondary-actions {
+    display: none;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 5px;
+    margin-bottom: 10px;
+  }
+  #secondary-actions.open { display: grid; }
+  .sec-btn {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface2);
+    color: var(--text2);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 0;
+    cursor: pointer;
+    transition: transform 0.1s;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  @media (hover: hover) {
+    .sec-btn:hover { background: var(--surface3); }
+  }
+  .sec-btn:active { transform: scale(0.94); background: var(--surface3); }
+
+  /* Auto-fix row */
+  #fix-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  #fix-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+    font-size: 13px;
+    color: var(--text2);
+  }
+  #fix-toggle .toggle-track {
+    width: 36px; height: 20px;
+    border-radius: 10px;
+    background: #d1d5db;
+    position: relative;
+    transition: background 0.2s;
+  }
+  #fix-toggle.on .toggle-track { background: var(--accent); }
+  #fix-toggle .toggle-knob {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    position: absolute;
+    top: 2px; left: 2px;
+    transition: left 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  }
+  #fix-toggle.on .toggle-knob { left: 18px; }
+  #fix-status {
+    font-size: 12px;
+    color: var(--accent);
+    opacity: 0;
+    transition: opacity 0.2s;
+    font-weight: 600;
+  }
+  #fix-status.visible { opacity: 1; }
+
+  /* Input bar */
+  #input-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #input-bar input {
+    flex: 1;
+    padding: 14px 16px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 20px;
+    outline: none;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  #input-bar input:focus {
+    border-color: var(--accent2);
+    background: #fff;
+  }
+  #input-bar input::placeholder { color: var(--text3); }
+  #btn-send {
+    width: 52px;
+    height: 52px;
+    border: none;
+    border-radius: var(--radius-lg);
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    cursor: pointer;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.1s;
+    -webkit-user-select: none;
+    user-select: none;
+    box-shadow: var(--shadow-lg);
+  }
+  @media (hover: hover) {
+    #btn-send:hover { filter: brightness(1.1); }
+  }
+  #btn-send:active { transform: scale(0.92); }
+  #btn-send svg { width: 24px; height: 24px; }
+
+  /* Mic button */
+  #btn-mic {
+    width: 52px;
+    height: 52px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface2);
+    color: var(--text2);
+    cursor: pointer;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.1s, background 0.2s, border-color 0.2s;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #btn-mic.recording {
+    background: #fef2f2;
+    border-color: var(--red);
+    color: var(--red);
+    animation: mic-pulse 1s infinite;
+  }
+  @keyframes mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0.3); }
+    50% { box-shadow: 0 0 0 8px rgba(220,38,38,0); }
+  }
+  #btn-mic.processing {
+    background: #fef3c7;
+    border-color: var(--yellow);
+    color: var(--yellow);
+    animation: mic-pulse 1s infinite;
+  }
+  @media (hover: hover) {
+    #btn-mic:hover { background: var(--surface3); }
+  }
+  #btn-mic:active { transform: scale(0.92); }
+  #btn-mic svg { width: 22px; height: 22px; }
+
+  /* Read aloud toggle */
+  #voice-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+    font-size: 13px;
+    color: var(--text2);
+  }
+  .toggle-label .toggle-track {
+    width: 36px; height: 20px;
+    border-radius: 10px;
+    background: #d1d5db;
+    position: relative;
+    transition: background 0.2s;
+  }
+  .toggle-label.on .toggle-track { background: var(--accent); }
+  .toggle-label .toggle-knob {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    position: absolute;
+    top: 2px; left: 2px;
+    transition: left 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  }
+  .toggle-label.on .toggle-knob { left: 18px; }
+
+  /* Auth modal */
+  #auth-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  #auth-overlay.hidden, #name-overlay.hidden { display: none; }
+  #name-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  #auth-box {
+    background: var(--surface);
+    padding: 32px 24px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    width: 90%; max-width: 360px;
+    text-align: center;
+    box-shadow: var(--shadow-lg);
+  }
+  #auth-box h2 { margin-bottom: 20px; font-size: 18px; font-weight: 700; }
+  #auth-box input {
+    width: 100%;
+    padding: 12px 16px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 16px;
+    margin-bottom: 14px;
+    outline: none;
+  }
+  #auth-box button {
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: var(--radius);
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div id="auth-overlay" class="hidden">
+  <div id="auth-box">
+    <h2>Enter Auth Token</h2>
+    <input type="password" id="token-input" placeholder="Token" autocomplete="off">
+    <button id="token-submit">Connect</button>
+  </div>
+</div>
+
+<div id="name-overlay">
+  <div id="auth-box">
+    <h2>Welcome to Claude Remote</h2>
+    <p style="color:var(--text2);font-size:14px;margin-bottom:16px;">Enter your name to start a session</p>
+    <input type="text" id="name-input" placeholder="Your name" autocomplete="off">
+    <button id="name-submit">Start</button>
+  </div>
+</div>
+
+<div id="app">
+  <div id="top-bar">
+    <span class="title"><span class="title-icon">C</span> Claude Remote</span>
+  </div>
+
+  <div id="terminal-container"></div>
+
+  <div id="controls">
+    <div id="status-row">
+      <div id="status">
+        <span class="dot"></span>
+        <span id="status-text">Connecting</span>
+      </div>
+    </div>
+
+    <div id="action-grid">
+      <button class="act-btn green" data-send="y">Yes</button>
+      <button class="act-btn red" data-send="n">No</button>
+      <button class="act-btn ghost" data-arrow="up">Up</button>
+      <button class="act-btn ghost" data-arrow="down">Down</button>
+      <button class="act-btn ghost" data-raw="escape">Esc</button>
+    </div>
+
+    <button id="more-toggle">
+      More <span class="chevron">&#9660;</span>
+    </button>
+
+    <div id="secondary-actions">
+      <button class="sec-btn" data-send="yes">yes</button>
+      <button class="sec-btn" data-send="no">no</button>
+      <button class="sec-btn" data-send="/exit">/exit</button>
+      <button class="sec-btn" data-send="/clear">/clear</button>
+      <button class="sec-btn" data-send="/help">/help</button>
+      <button class="sec-btn" data-send="/compact">/compact</button>
+      <button class="sec-btn" data-send="/cost">/cost</button>
+      <button class="sec-btn" data-send="/review">/review</button>
+    </div>
+
+    <div id="voice-row">
+      <div id="fix-toggle" class="toggle-label on">
+        <div class="toggle-track"><div class="toggle-knob"></div></div>
+        Auto-fix
+      </div>
+      <span id="fix-status"></span>
+      <div id="read-toggle" class="toggle-label">
+        <div class="toggle-track"><div class="toggle-knob"></div></div>
+        Read aloud
+      </div>
+    </div>
+
+    <div id="input-bar">
+      <input type="text" id="chat-input" placeholder="Message Claude..." autocomplete="off">
+      <button id="btn-mic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+      </button>
+      <button id="btn-send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"></polyline><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script>
+(function () {
+  const chatInput = document.getElementById("chat-input");
+  const btnSend = document.getElementById("btn-send");
+  const statusEl = document.getElementById("status");
+  const statusText = document.getElementById("status-text");
+  const authOverlay = document.getElementById("auth-overlay");
+  const tokenInput = document.getElementById("token-input");
+  const tokenSubmit = document.getElementById("token-submit");
+  const nameOverlay = document.getElementById("name-overlay");
+  const nameInput = document.getElementById("name-input");
+  const nameSubmit = document.getElementById("name-submit");
+  const moreToggle = document.getElementById("more-toggle");
+  const secondaryActions = document.getElementById("secondary-actions");
+  const fixToggle = document.getElementById("fix-toggle");
+  const fixStatus = document.getElementById("fix-status");
+  const readToggle = document.getElementById("read-toggle");
+  const btnMic = document.getElementById("btn-mic");
+
+  let ws = null;
+  let authToken = "";
+  let reconnectTimer = null;
+  let autoFix = true;
+  let readAloud = false;
+  let messageHistory = [];
+  let sending = false;
+  let userName = localStorage.getItem("claude-remote-name") || "";
+  let recognition = null;
+  let isRecording = false;
+
+  // --- Name prompt ---
+  function initName() {
+    if (userName) {
+      nameOverlay.classList.add("hidden");
+      document.querySelector("#top-bar .title").innerHTML =
+        '<span class="title-icon">C</span> ' + userName;
+      connect();
+    } else {
+      nameOverlay.classList.remove("hidden");
+      nameInput.focus();
+    }
+  }
+
+  function submitName() {
+    const name = nameInput.value.trim();
+    if (!name) return;
+    userName = name;
+    localStorage.setItem("claude-remote-name", name);
+    nameOverlay.classList.add("hidden");
+    document.querySelector("#top-bar .title").innerHTML =
+      '<span class="title-icon">C</span> ' + userName;
+    connect();
+  }
+
+  nameSubmit.addEventListener("click", submitName);
+  nameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitName();
+  });
+
+  // --- Auto-fix ---
+  fixToggle.addEventListener("click", () => {
+    autoFix = !autoFix;
+    fixToggle.classList.toggle("on", autoFix);
+  });
+
+  // --- Read aloud toggle ---
+  readToggle.addEventListener("click", () => {
+    readAloud = !readAloud;
+    readToggle.classList.toggle("on", readAloud);
+    if (!readAloud) stopTTS();
+  });
+
+  // Read-aloud: extract Claude's answer from xterm buffer after output settles
+  let speechTimer = null;
+  let lastUserSendTime = 0;
+  let bufferLineBeforeSend = 0; // track where user's message ended in terminal
+
+  function getTerminalText(fromLine) {
+    const buf = term.buffer.active;
+    const lines = [];
+    const start = Math.max(0, fromLine);
+    for (let i = start; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (line) lines.push(line.translateToString(true));
+    }
+    return lines;
+  }
+
+  function extractClaudeAnswer(lines) {
+    return lines
+      .filter(l => {
+        const t = l.trim();
+        if (!t) return false;
+        // Skip box-drawing / decoration lines
+        if (/^[─━╭╮╯╰│┌┐└┘├┤┬┴┼░▒▓█▌▐▀▄\s]+$/.test(t)) return false;
+        // Skip status bar lines (spinners, prompts)
+        if (/^[?>❯⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✻✱\*]\s/.test(t)) return false;
+        // Skip Claude TUI chrome (status bar, hints, welcome)
+        if (/\?\s*for\s*shortcuts/i.test(t)) return false;
+        if (/subagent/i.test(t)) return false;
+        if (/\/exit\s+to\s+leave/i.test(t)) return false;
+        if (/\/help\s+for/i.test(t)) return false;
+        if (/^[✻✱\*]\s*(ruminating|thinking|pondering|musing|considering|reflecting|enchanting|contemplating|reasoning)/i.test(t)) return false;
+        if (/enchanting/i.test(t)) return false;
+        if (/welcome\s+back/i.test(t)) return false;
+        if (/Claude\s+Code\s+v/i.test(t)) return false;
+        if (/opus\s+\d|claude\s+max|organization/i.test(t)) return false;
+        if (/\/opt\/claude|workspaces\//i.test(t)) return false;
+        if (/Try\s+"edit\s+<filepath>/i.test(t)) return false;
+        if (/cagaydino@/i.test(t)) return false;
+        // Skip user input lines (prompt echo starts with > or ❯)
+        if (/^[>❯]/.test(t)) return false;
+        // Skip "Human:" / "You:" turn markers
+        if (/^(human|you|user)\s*:/i.test(t)) return false;
+        // Skip cost/token lines
+        if (/^\d+[\.,]\d+.*tokens?/i.test(t)) return false;
+        if (/^\$\d/.test(t)) return false;
+        // Skip lines that are mostly whitespace (padding/status bar)
+        if (t.replace(/\s/g, "").length < 3) return false;
+        return true;
+      })
+      .join(" ")
+      .replace(/[│┌┐└┘├┤┬┴┼╭╮╯╰]/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  let ttsSendId = 0;
+  let ttsPlayed = false;
+  let ttsAudio = null;
+
+  function stopTTS() {
+    if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
+  }
+
+  // Unlock audio on iOS
+  document.addEventListener("touchend", function unlock() {
+    const a = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
+    a.play().catch(() => {});
+  }, { once: true });
+
+  function ttsDebug(msg) {
+    fixStatus.textContent = msg;
+    fixStatus.classList.add("visible");
+    setTimeout(() => fixStatus.classList.remove("visible"), 4000);
+  }
+
+  let ttsRetries = 0;
+  let outputSinceSend = 0;
+  let lastAnswerLen = 0;
+
+  function maybeReadAloud() {
+    if (!readAloud || ttsPlayed) return;
+    if (Date.now() - lastUserSendTime > 30000) return;
+    outputSinceSend++;
+
+    clearTimeout(speechTimer);
+    const myId = ttsSendId;
+    speechTimer = setTimeout(async () => {
+      if (myId !== ttsSendId || ttsPlayed) return;
+
+      const newLines = getTerminalText(bufferLineBeforeSend);
+      const answer = extractClaudeAnswer(newLines);
+
+      // Wait until answer stabilizes (same length twice) and has real content
+      if (answer.length > 10 && answer.length === lastAnswerLen) {
+        ttsPlayed = true;
+        stopTTS();
+        try {
+          const resp = await fetch("./api/tts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: answer }),
+          });
+          if (!resp.ok || myId !== ttsSendId) return;
+          const blob = await resp.blob();
+          if (myId !== ttsSendId) return;
+          const url = URL.createObjectURL(blob);
+          ttsAudio = new Audio(url);
+          ttsAudio.play().catch(() => {});
+          ttsAudio.onended = () => { URL.revokeObjectURL(url); ttsAudio = null; };
+        } catch {}
+      } else {
+        lastAnswerLen = answer.length;
+        if (ttsRetries < 15) {
+          ttsRetries++;
+          // Keep waiting for output to settle
+          speechTimer = setTimeout(() => maybeReadAloud(), 1500);
+        }
+      }
+    }, 1500);
+  }
+
+  // --- Mic / Whisper transcription ---
+  // Uses MediaRecorder (works on all browsers) + OpenAI Whisper API via server
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let micTouched = false;
+
+  function toggleMic(e) {
+    e.preventDefault();
+    if (e.type === "touchend") { micTouched = true; }
+    if (e.type === "click" && micTouched) { micTouched = false; return; }
+
+    if (isRecording) {
+      stopRecording();
+      return;
+    }
+    startRecording();
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      // Use webm for Chrome/Firefox, mp4 for Safari
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/mp4";
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        if (audioChunks.length === 0) return;
+
+        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+        btnMic.classList.remove("recording");
+        btnMic.classList.add("processing");
+
+        try {
+          const formData = new FormData();
+          formData.append("audio", blob, "audio.webm");
+
+          const resp = await fetch("./api/transcribe", {
+            method: "POST",
+            body: formData,
+          });
+          const data = await resp.json();
+          if (data.text && data.text.trim()) {
+            chatInput.value = data.text.trim();
+            handleSend();
+          }
+        } catch (err) {
+          console.error("Transcribe error:", err);
+        } finally {
+          btnMic.classList.remove("processing");
+        }
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+      btnMic.classList.add("recording");
+    } catch (err) {
+      console.error("Mic access error:", err);
+      alert("Could not access microphone. Check permissions.");
+    }
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+    }
+    isRecording = false;
+    btnMic.classList.remove("recording");
+  }
+
+  btnMic.addEventListener("click", toggleMic);
+  btnMic.addEventListener("touchend", toggleMic);
+
+  async function fixText(text) {
+    if (!autoFix || !text.trim()) return text;
+    fixStatus.textContent = "Fixing...";
+    fixStatus.classList.add("visible");
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const resp = await fetch("./api/fix-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, history: messageHistory }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      const data = await resp.json();
+      if (data.fixed && data.fixed !== text) {
+        fixStatus.textContent = "Fixed";
+        setTimeout(() => fixStatus.classList.remove("visible"), 1500);
+        return data.fixed;
+      }
+      fixStatus.textContent = "";
+      fixStatus.classList.remove("visible");
+      return text;
+    } catch {
+      fixStatus.textContent = "";
+      fixStatus.classList.remove("visible");
+      return text;
+    }
+  }
+
+  // --- More toggle ---
+  moreToggle.addEventListener("click", () => {
+    moreToggle.classList.toggle("open");
+    secondaryActions.classList.toggle("open");
+    setTimeout(() => fitAddon.fit(), 50);
+  });
+
+  // --- Clean output: strip decorative horizontal lines ---
+  function cleanOutput(str) {
+    return str
+      .replace(/[─━]{3,}/g, "")
+      .replace(/\?\s+for\s+shortcuts[^\n]*/g, "")
+      .replace(/subagent[^\n]*/gi, "")
+      .replace(/\/exit\s+to\s+leave[^\n]*/gi, "")
+      .replace(/[✻✱\*]\s*(ruminating|thinking|pondering|musing|considering|reflecting|enchanting|contemplating|reasoning)[^\n]*/gi, "");
+  }
+
+  // --- Terminal ---
+  const term = new window.Terminal({
+    cursorBlink: true,
+    fontSize: 15,
+    fontFamily: '"SF Mono", "Fira Code", "Cascadia Code", "Menlo", monospace',
+    theme: {
+      background: "#ffffff",
+      foreground: "#1a1a1a",
+      cursor: "#6d28d9",
+      selectionBackground: "rgba(109,40,217,0.15)",
+    },
+    scrollback: 10000,
+    convertEol: true,
+  });
+  const fitAddon = new window.FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById("terminal-container"));
+  fitAddon.fit();
+
+  term.onWriteParsed(() => term.scrollToBottom());
+  window.addEventListener("resize", () => fitAddon.fit());
+
+  term.onData((data) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "input", data }));
+    }
+  });
+
+  // --- Auth ---
+  function showAuthPrompt() {
+    authOverlay.classList.remove("hidden");
+    tokenInput.focus();
+  }
+  tokenSubmit.addEventListener("click", () => {
+    authToken = tokenInput.value.trim();
+    authOverlay.classList.add("hidden");
+    connect();
+  });
+  tokenInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") tokenSubmit.click();
+  });
+
+  // --- WebSocket ---
+  function wsUrl() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const basePath = location.pathname.replace(/\/+$/, "");
+    const params = new URLSearchParams();
+    if (authToken) params.set("token", authToken);
+    if (userName) params.set("name", userName);
+    const qs = params.toString();
+    return `${proto}//${location.host}${basePath}/${qs ? "?" + qs : ""}`;
+  }
+
+  let currentWs = null;
+
+  function setStatus(state, text) {
+    statusEl.classList.remove("connected", "disconnected");
+    if (state) statusEl.classList.add(state);
+    statusText.textContent = text;
+  }
+
+  function connect() {
+    clearTimeout(reconnectTimer);
+    if (ws) {
+      const old = ws;
+      ws = null;
+      currentWs = null;
+      try { old.close(); } catch {}
+    }
+
+    setStatus(null, "Connecting...");
+
+    let newWs;
+    try {
+      newWs = new WebSocket(wsUrl());
+    } catch {
+      setStatus("disconnected", "Failed");
+      reconnectTimer = setTimeout(connect, 3000);
+      return;
+    }
+    ws = newWs;
+    currentWs = newWs;
+
+    newWs.addEventListener("open", () => {
+      if (currentWs !== newWs) return;
+      setStatus("connected", "Connected");
+      newWs.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    });
+
+    newWs.addEventListener("message", (e) => {
+      if (currentWs !== newWs) return;
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "output") {
+          term.write(cleanOutput(msg.data));
+          maybeReadAloud();
+        } else if (msg.type === "exit") {
+          term.writeln("\r\n\x1b[33m[Session ended]\x1b[0m");
+        } else if (msg.type === "error") {
+          if (msg.data && msg.data.includes("auth")) showAuthPrompt();
+          else term.writeln("\r\n\x1b[31m[Error: " + msg.data + "]\x1b[0m");
+        }
+      } catch {}
+    });
+
+    newWs.addEventListener("close", (e) => {
+      if (currentWs !== newWs) return;
+      setStatus("disconnected", "Disconnected");
+      if (e.code === 4001) { showAuthPrompt(); return; }
+      reconnectTimer = setTimeout(connect, 3000);
+    });
+
+    newWs.addEventListener("error", () => {
+      if (currentWs !== newWs) return;
+      setStatus("disconnected", "Error");
+    });
+  }
+
+  // --- Send ---
+  function sendRaw(data) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "input", data }));
+  }
+
+  const specialKeys = {
+    up: "\x1b[A",
+    down: "\x1b[B",
+    escape: "\x1b",
+  };
+
+  // Action buttons (primary grid)
+  document.getElementById("action-grid").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-send], [data-arrow], [data-raw]");
+    if (!btn) return;
+    e.stopPropagation();
+    lastUserSendTime = Date.now();
+    ttsSendId++;
+    ttsPlayed = false;
+    ttsRetries = 0;
+    outputSinceSend = 0;
+    lastAnswerLen = 0;
+    stopTTS();
+    bufferLineBeforeSend = term.buffer.active.baseY + term.buffer.active.cursorY;
+    const arrow = btn.getAttribute("data-arrow");
+    if (arrow) { sendRaw(specialKeys[arrow]); return; }
+    const raw = btn.getAttribute("data-raw");
+    if (raw) { sendRaw(specialKeys[raw] || raw); return; }
+    sendRaw(btn.getAttribute("data-send") + "\r");
+  });
+
+  // Secondary buttons
+  document.getElementById("secondary-actions").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-send], [data-arrow], [data-raw]");
+    if (!btn) return;
+    e.stopPropagation();
+    const arrow = btn.getAttribute("data-arrow");
+    if (arrow) { sendRaw(specialKeys[arrow]); return; }
+    const raw = btn.getAttribute("data-raw");
+    if (raw) { sendRaw(specialKeys[raw] || raw); return; }
+    const value = btn.getAttribute("data-send");
+    if (value !== null) sendRaw(value + "\r");
+  });
+
+  // --- Input send ---
+  async function handleSend() {
+    if (sending) return;
+    const text = chatInput.value;
+
+    lastUserSendTime = Date.now();
+    ttsSendId++;
+    ttsPlayed = false;
+    ttsRetries = 0;
+    outputSinceSend = 0;
+    lastAnswerLen = 0;
+    stopTTS();
+
+    // Empty input = just send Enter (acts as Enter key)
+    if (!text) {
+      bufferLineBeforeSend = term.buffer.active.baseY + term.buffer.active.cursorY;
+      sendRaw("\r");
+      return;
+    }
+
+    sending = true;
+    chatInput.disabled = true;
+    btnSend.style.opacity = "0.5";
+
+    try {
+      const finalText = await fixText(text);
+      messageHistory.push(finalText);
+      if (messageHistory.length > 20) messageHistory.shift();
+      term.clear();
+      bufferLineBeforeSend = 0;
+      sendRaw(finalText + "\r");
+      chatInput.value = "";
+    } finally {
+      chatInput.disabled = false;
+      btnSend.style.opacity = "1";
+      sending = false;
+      chatInput.focus();
+    }
+  }
+
+  btnSend.addEventListener("click", (e) => { e.preventDefault(); handleSend(); });
+  btnSend.addEventListener("touchend", (e) => { e.preventDefault(); handleSend(); });
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  });
+
+  setTimeout(() => fitAddon.fit(), 100);
+
+  // --- Reconnect on visibility change ---
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        clearTimeout(reconnectTimer);
+        connect();
+      }
+    }
+  });
+
+  initName();
+})();
+</script>
+</body>
+</html>
