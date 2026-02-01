@@ -1,3 +1,4 @@
+require("dotenv").config();
 // Claude Code Web Remote - Server
 // ================================
 // Express + WebSocket server that spawns Claude Code in a real PTY.
