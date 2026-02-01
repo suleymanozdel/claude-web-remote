@@ -335,6 +335,21 @@ wss.on("connection", (ws, req) => {
     return result;
   }
 
+  function needsUserInput(raw) {
+    const stripped = stripAnsiServer(raw);
+    // Permission / approval prompts
+    if (/Do you want to proceed/i.test(stripped)) return "Claude is asking: Do you want to proceed?";
+    if (/Yes,\s+allow/i.test(stripped)) return "Claude needs your permission to continue.";
+    if (/Allow\s+(once|always)/i.test(stripped)) return "Claude is asking for permission.";
+    if (/Esc to cancel/i.test(stripped) && /Tab to amend/i.test(stripped)) return "Claude needs your approval.";
+    // Bash/tool approval
+    if (/Run command\?/i.test(stripped)) return "Claude wants to run a command.";
+    if (/Allow\s+.*\?/i.test(stripped)) return "Claude is asking for permission.";
+    // Yes/No prompt
+    if (/\(y\/n\)/i.test(stripped) || /\[Y\/n\]/i.test(stripped)) return "Claude needs a yes or no answer.";
+    return null;
+  }
+
   function onOutputChunk(raw) {
     if (!userSentAt || ttsDone) return;
     if (Date.now() - userSentAt > 120000) return;
@@ -342,44 +357,37 @@ wss.on("connection", (ws, req) => {
     rawBuffer += raw;
     clearTimeout(ttsTimer);
 
-    // Wait for the prompt marker "❯" which signals Claude is done responding.
-    // First message: buffer has welcome screen ❯ + user prompt ❯ + answer prompt ❯ (need ≥2)
-    // Subsequent messages: buffer starts after reset, only has answer prompt ❯ (need ≥1)
-    const promptCount = (rawBuffer.match(/❯/g) || []).length;
-    const needed = isFirstMessage ? 2 : 1;
+    // Check if Claude is waiting for user input
+    const inputNeeded = needsUserInput(rawBuffer);
+    if (!inputNeeded) return;
 
-    if (promptCount < needed) {
-      // Claude is still working — new prompt hasn't appeared yet
-      return;
-    }
-
-    // Prompt appeared — Claude is done. Wait 1s for any trailing output, then extract.
+    // Debounce 1.5s to let the full prompt render
     ttsTimer = setTimeout(async () => {
-      const finalAnswer = extractAnswer(rawBuffer);
-      console.log(`[TTS] Extracted: "${finalAnswer.substring(0, 200)}"`);
-      if (finalAnswer.length > 5) {
-        ttsDone = true;
-        isFirstMessage = false;
-        try {
-          const cmd = new SynthesizeSpeechCommand({
-            Text: finalAnswer.substring(0, 3000),
-            OutputFormat: "mp3",
-            VoiceId: "Danielle",
-            Engine: "generative",
-          });
-          const result = await polly.send(cmd);
-          const chunks = [];
-          for await (const chunk of result.AudioStream) {
-            chunks.push(chunk);
-          }
-          const audioBuffer = Buffer.concat(chunks);
-          const base64Audio = audioBuffer.toString("base64");
-          send({ type: "tts_audio", audio: base64Audio });
-        } catch (err) {
-          console.error("Polly TTS error:", err.message);
+      const finalCheck = needsUserInput(rawBuffer);
+      if (!finalCheck) return;
+
+      console.log(`[TTS] Input needed: "${finalCheck}"`);
+      ttsDone = true;
+      isFirstMessage = false;
+      try {
+        const cmd = new SynthesizeSpeechCommand({
+          Text: finalCheck,
+          OutputFormat: "mp3",
+          VoiceId: "Danielle",
+          Engine: "generative",
+        });
+        const result = await polly.send(cmd);
+        const chunks = [];
+        for await (const chunk of result.AudioStream) {
+          chunks.push(chunk);
         }
+        const audioBuffer = Buffer.concat(chunks);
+        const base64Audio = audioBuffer.toString("base64");
+        send({ type: "tts_audio", audio: base64Audio });
+      } catch (err) {
+        console.error("Polly TTS error:", err.message);
       }
-    }, 2000);
+    }, 1500);
   }
 
   function startSession(cols, rows) {
