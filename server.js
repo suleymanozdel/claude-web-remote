@@ -311,20 +311,20 @@ wss.on("connection", (ws, req) => {
 
     let result = answerLines.join(" ").replace(/\s{2,}/g, " ").trim();
 
-    // Post-processing: strip any remaining spinner/thinking fragments from joined text
+    // Post-processing: strip spinner/thinking/echo fragments from joined text
     result = result
       .replace(/\(thinking\)/gi, "")
       .replace(/\bthinking\b/gi, "")
-      // Remove word+ellipsis (spinner) anywhere
       .replace(/\b[A-Za-z\u00C0-\u024F]+…/g, "")
-      // Remove standalone ellipsis
       .replace(/…/g, "")
-      // Remove short fragments at start (1-4 chars before first real sentence)
-      .replace(/^(\s*[a-zA-Z]{1,4}\s+)+(?=[A-Z])/g, "")
-      // Remove leading punctuation/fragments
-      .replace(/^[\s!.,;:?-]+/, "")
       .replace(/\s{2,}/g, " ")
       .trim();
+
+    // Strip leading junk: remove all short (1-4 char) word fragments at the start
+    // until we hit a word of 5+ chars (likely the start of real text)
+    result = result.replace(/^(\s*\b[a-zA-Z]{1,4}\b[\s.,;:!?-]*)+/, "").trim();
+    // Also strip if it starts with punctuation
+    result = result.replace(/^[\s!.,;:?-]+/, "").trim();
 
     // Remove the user's prompt text if it leaked through
     if (lastUserText && lastUserText.length > 2) {
