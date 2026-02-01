@@ -262,6 +262,12 @@ wss.on("connection", (ws, req) => {
       if (/^[A-Za-z\u00C0-\u024F]+\.{2,3}$/.test(l)) return false;
       // Partial spinner (truncated single word)
       if (/^[A-Z\u00C0-\u024F][a-z\u00C0-\u024F]+$/.test(l) && l.length < 15) return false;
+      // Spinner animation fragments: same word repeated (e.g. "thinking thinking thinking")
+      if (/^(\w+)(\s+\1){1,}/.test(l)) return false;
+      // Line is just "(word)" like "(thinking)"
+      if (/^\([a-z]+\)$/i.test(l)) return false;
+      // Contains "thinking" or other spinner words as standalone
+      if (/\bthinking\b/i.test(l) && l.replace(/thinking/gi, "").replace(/[^a-zA-Z]/g, "").length < 10) return false;
 
       // Welcome screen
       if (/welcome\s*back/i.test(l)) return false;
