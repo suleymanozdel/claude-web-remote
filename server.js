@@ -299,11 +299,33 @@ wss.on("connection", (ws, req) => {
       return true;
     });
 
-    // Join into single text, then remove the user's prompt if it leaked through
+    // Join into single text
     let result = answerLines.join(" ").replace(/\s{2,}/g, " ").trim();
 
+    // --- Post-processing: clean spinner/junk from joined text ---
+    // Remove "thinking" and fragments like "thi", "nki", "ng", "ing" that come from spinner animation
+    result = result
+      // Remove (thinking) and thinking repeated
+      .replace(/\(thinking\)/gi, "")
+      .replace(/\bthinking\b/gi, "")
+      // Remove spinner word fragments: 2-3 char fragments separated by spaces/hyphens
+      // Pattern: sequences of short fragments like "thi -nki ng" or "thi nki ng"
+      .replace(/(\b[a-z]{1,3}\b[\s-]*){3,}/gi, (match) => {
+        // Only remove if the fragments don't form a meaningful sentence
+        const cleaned = match.replace(/[\s-]+/g, "");
+        if (cleaned.length < 15) return "";
+        return match;
+      })
+      // Remove any remaining isolated 1-3 letter fragments at start
+      .replace(/^([a-z]{1,3}\s+)+/i, "")
+      // Remove common spinner words that leaked through
+      .replace(/\b(pondering|ruminating|musing|considering|reflecting|contemplating|reasoning|flowing|imagining|dreaming|composing|crafting|brewing|conjuring|weaving|channeling|processing|generating|ideating|saut[ée]ing|newspapering)\b\.{0,3}…?/gi, "")
+      // Clean up
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
+    // Remove the user's prompt text if it leaked through
     if (lastUserText && lastUserText.length > 2) {
-      // Remove all occurrences of the user's text (case-insensitive)
       const escaped = lastUserText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       result = result.replace(new RegExp(escaped, "gi"), "").replace(/\s{2,}/g, " ").trim();
     }
@@ -318,11 +340,17 @@ wss.on("connection", (ws, req) => {
     rawBuffer += raw;
     clearTimeout(ttsTimer);
 
+    // Don't try to extract until at least 3s after user sent input (Claude needs time)
+    if (Date.now() - userSentAt < 3000) {
+      ttsTimer = setTimeout(() => onOutputChunk(""), 1000);
+      return;
+    }
+
     // Only start the debounce timer once we detect real answer content
     const preview = extractAnswer(rawBuffer);
     if (preview.length <= 5) return; // Still just spinner/UI, wait for more
 
-    // We have answer content — wait 2s for more to arrive, then send
+    // We have answer content — wait 3s for more to arrive, then send
     ttsTimer = setTimeout(async () => {
       const finalAnswer = extractAnswer(rawBuffer);
       console.log(`[TTS] Extracted: "${finalAnswer.substring(0, 200)}"`);
